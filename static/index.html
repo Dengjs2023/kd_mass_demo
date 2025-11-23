@@ -1,0 +1,324 @@
+<!-- static/index.html -->
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="UTF-8">
+    <title>KD-MASS 多智能体战略博弈 Demo</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 16px;
+            display: flex;
+            gap: 16px;
+        }
+        .left, .right {
+            flex: 1;
+            border: 1px solid #ccc;
+            padding: 12px;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+        h2 {
+            margin-top: 0;
+        }
+        .agent-card {
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+        }
+        label {
+            display: block;
+            margin-top: 4px;
+            font-size: 13px;
+        }
+        input[type="text"], textarea, input[type="number"] {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 4px;
+            margin-top: 2px;
+            font-size: 13px;
+        }
+        textarea {
+            min-height: 60px;
+        }
+        button {
+            margin-top: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+        #log {
+            border: 1px solid #eee;
+            padding: 8px;
+            height: 80vh;
+            overflow-y: auto;
+            background: #fafafa;
+            font-size: 14px;
+        }
+        .msg {
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px dashed #ddd;
+        }
+        .msg-header {
+            font-weight: bold;
+        }
+        .msg-content {
+            white-space: pre-wrap;
+        }
+        .kb-mode-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .kb-mode-row select {
+            flex: 0 0 150px;
+        }
+        .kb-mode-row input[type="text"] {
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+<div class="left">
+    <h2>多智能体配置</h2>
+
+    <label>场景描述（Scenario）</label>
+    <textarea id="scenario" placeholder="例如：在俄乌冲突背景下，围绕停火、能源安全和国际监督机制展开多轮谈判……"></textarea>
+
+    <label>轮数（每个智能体每轮发言一次）</label>
+    <input id="turns" type="number" value="3" min="1" max="10"/>
+
+    <h3>智能体列表</h3>
+    <div id="agents-container"></div>
+    <button id="add-agent-btn">添加智能体</button>
+
+    <br/>
+    <button id="run-btn">开始推演（流式）</button>
+    <button id="run-once-btn">一次性推演（非流式）</button>
+</div>
+
+<div class="right">
+    <h2>对话 / 推演结果</h2>
+    <div id="log"></div>
+</div>
+
+<script>
+    const agentsContainer = document.getElementById('agents-container');
+    const addAgentBtn = document.getElementById('add-agent-btn');
+    const runBtn = document.getElementById('run-btn');
+    const runOnceBtn = document.getElementById('run-once-btn');
+    const logDiv = document.getElementById('log');
+
+    // 论文中的三个默认智能体：Russia / Ukraine / International_Organization
+    const defaultAgents = [
+        {
+            name: "Russia",
+            role: "区域大国，强调战略缓冲带与安全边界，对北约东扩高度敏感，在能源和军事上具备较强实力。",
+            knowledge: "拥有丰富的能源资源，长期追求在周边地区的影响力；对安全威胁倾向于采取强硬和前置式应对；在对外政策中兼顾经济利益与军事安全。",
+            knowledge_mode: "inline",
+            knowledge_folder: ""
+        },
+        {
+            name: "Ukraine",
+            role: "处于安全压力下的防御性国家，核心目标是维护主权和领土完整，争取国际安全与经济支持。",
+            knowledge: "对外部安全承诺高度依赖；在冲突情境下倾向于寻求国际组织和盟友的支持；在谈判中一般坚持主权和领土不可让渡的原则。",
+            knowledge_mode: "inline",
+            knowledge_folder: ""
+        },
+        {
+            name: "International_Organization",
+            role: "多国组成的国际组织，目标是降低冲突强度、推动停火与谈判，兼顾人道主义和地区稳定。",
+            knowledge: "强调国际法与人道主义原则；在冲突中通过制裁、调停、援助等方式影响局势；在大国之间维持相对平衡，避免冲突外溢。",
+            knowledge_mode: "inline",
+            knowledge_folder: ""
+        }
+    ];
+
+    function createAgentCard(agentData = {name: "", role: "", knowledge: "", knowledge_mode: "inline", knowledge_folder: ""}) {
+        const div = document.createElement('div');
+        div.className = 'agent-card';
+
+        div.innerHTML = `
+            <label>名称（Name）</label>
+            <input type="text" class="agent-name" value="${agentData.name || ""}" placeholder="如 Russia / Ukraine / NATO">
+
+            <label>角色定位（Role）</label>
+            <textarea class="agent-role" placeholder="行为风格、战略定位等">${agentData.role || ""}</textarea>
+
+            <label>内联知识（Knowledge / 内置文本）</label>
+            <textarea class="agent-knowledge" placeholder="与该主体相关的政策、历史经验、利益偏好等">${agentData.knowledge || ""}</textarea>
+
+            <div class="kb-mode-row">
+                <label style="margin-top:0;">知识来源</label>
+                <select class="agent-kb-mode">
+                    <option value="inline" ${agentData.knowledge_mode === "inline" ? "selected" : ""}>使用上方内联文本</option>
+                    <option value="folder" ${agentData.knowledge_mode === "folder" ? "selected" : ""}>使用后端目录路径</option>
+                </select>
+                <input type="text" class="agent-kb-folder" value="${agentData.knowledge_folder || ""}" placeholder="例如 D:\\\\kb\\\\russia">
+            </div>
+        `;
+
+        agentsContainer.appendChild(div);
+    }
+
+    // 初始化默认智能体
+    defaultAgents.forEach(a => createAgentCard(a));
+
+    addAgentBtn.onclick = () => {
+        createAgentCard();
+    };
+
+    function collectAgentsConfig() {
+        const agentCards = document.querySelectorAll('.agent-card');
+        const agents = [];
+
+        agentCards.forEach(card => {
+            const name = card.querySelector('.agent-name').value.trim();
+            const role = card.querySelector('.agent-role').value.trim();
+            const knowledge = card.querySelector('.agent-knowledge').value.trim();
+            const knowledge_mode = card.querySelector('.agent-kb-mode').value;
+            const knowledge_folder = card.querySelector('.agent-kb-folder').value.trim();
+
+            if (name) {
+                agents.push({
+                    name,
+                    role,
+                    knowledge,
+                    knowledge_mode,
+                    knowledge_folder
+                });
+            }
+        });
+
+        return agents;
+    }
+
+    function renderMessage(msg) {
+        const div = document.createElement('div');
+        div.className = 'msg';
+        div.innerHTML = `
+            <div class="msg-header">第 ${msg.turn} 轮 - <span>${msg.speaker}</span></div>
+            <div class="msg-content">${escapeHtml(msg.content)}</div>
+        `;
+        logDiv.appendChild(div);
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    // 流式推演
+    runBtn.onclick = async () => {
+        logDiv.innerHTML = "正在流式推演中...\n";
+
+        const scenario = document.getElementById('scenario').value.trim();
+        const turns = parseInt(document.getElementById('turns').value, 10) || 3;
+        const agents = collectAgentsConfig();
+
+        if (!scenario) {
+            alert("请先填写场景描述（Scenario）");
+            return;
+        }
+        if (agents.length === 0) {
+            alert("请至少配置一个智能体");
+            return;
+        }
+
+        try {
+            const resp = await fetch('/simulate_stream', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({scenario, turns, agents})
+            });
+
+            if (!resp.ok) {
+                const txt = await resp.text();
+                throw new Error(txt);
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = "";
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, {stream: true});
+                let lines = buffer.split('\n');
+                buffer = lines.pop(); // 最后一行可能是不完整的，留到下次
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const evt = JSON.parse(line);
+                        if (evt.type === 'message') {
+                            renderMessage(evt.data);
+                        } else if (evt.type === 'error') {
+                            const div = document.createElement('div');
+                            div.className = 'msg';
+                            div.innerHTML = `<div class="msg-content" style="color:red;">错误：${escapeHtml(evt.data)}</div>`;
+                            logDiv.appendChild(div);
+                        } else if (evt.type === 'done') {
+                            const div = document.createElement('div');
+                            div.className = 'msg';
+                            div.innerHTML = `<div class="msg-content" style="color:green;">推演结束，共 ${evt.data.total_messages} 条发言。</div>`;
+                            logDiv.appendChild(div);
+                        }
+                    } catch (e) {
+                        console.error("解析行失败：", e, line);
+                    }
+                }
+            }
+        } catch (err) {
+            logDiv.innerHTML += "\n请求出错：\n" + err;
+        }
+    };
+
+    // 一次性推演（非流式）
+    runOnceBtn.onclick = async () => {
+        logDiv.innerHTML = "正在一次性推演...\n";
+
+        const scenario = document.getElementById('scenario').value.trim();
+        const turns = parseInt(document.getElementById('turns').value, 10) || 3;
+        const agents = collectAgentsConfig();
+
+        if (!scenario) {
+            alert("请先填写场景描述（Scenario）");
+            return;
+        }
+        if (agents.length === 0) {
+            alert("请至少配置一个智能体");
+            return;
+        }
+
+        try {
+            const resp = await fetch('/simulate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({scenario, turns, agents})
+            });
+
+            if (!resp.ok) {
+                const txt = await resp.text();
+                throw new Error(txt);
+            }
+
+            const data = await resp.json();
+            logDiv.innerHTML = "";
+            (data.messages || []).forEach(renderMessage);
+        } catch (err) {
+            logDiv.innerHTML = "请求出错：\n" + err;
+        }
+    };
+</script>
+</body>
+</html>
